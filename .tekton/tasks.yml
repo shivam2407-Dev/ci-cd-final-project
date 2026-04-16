@@ -1,0 +1,107 @@
+apiVersion: tekton.dev/v1beta1
+kind: Task
+metadata:
+  name: cleanup
+spec:
+  workspaces:
+    - name: output   # ✅ changed from source
+  steps:
+    - name: remove
+      image: alpine:3
+      env:
+        - name: WORKSPACE_OUTPUT_PATH
+          value: $(workspaces.output.path)
+      workingDir: $(workspaces.output.path)
+      securityContext:
+        runAsNonRoot: false
+        runAsUser: 0
+      script: |
+        #!/usr/bin/env sh
+        set -eu
+        echo "Removing all files from ${WORKSPACE_OUTPUT_PATH} ..."
+        if [ -d "${WORKSPACE_OUTPUT_PATH}" ] ; then
+          rm -rf "${WORKSPACE_OUTPUT_PATH:?}"/*
+          rm -rf "${WORKSPACE_OUTPUT_PATH}"/.[!.]*
+          rm -rf "${WORKSPACE_OUTPUT_PATH}"/..?*
+        fi
+
+---
+apiVersion: tekton.dev/v1beta1
+kind: Task
+metadata:
+  name: nose
+spec:
+  workspaces:
+    - name: output   
+  params:
+    - name: args
+      description: Arguments to pass to nose
+      type: string
+      default: "-v"
+  steps:
+    - name: nosetests
+      image: python:3.9-slim
+      workingDir: $(workspaces.output.path)
+      script: |
+        #!/bin/bash
+        set -e
+        python -m pip install --upgrade pip wheel
+        pip install -r requirements.txt
+        pip install nose
+        nosetests $(params.args)
+---
+apiVersion: tekton.dev/v1beta1
+kind: Task
+metadata:
+  name: flake8
+spec:
+  workspaces:
+    - name: source
+  steps:
+    - name: lint
+      image: python:3.9-slim
+      workingDir: $(workspaces.source.path)
+      script: |
+        #!/bin/bash
+        set -e
+        python -m pip install --upgrade pip
+        pip install flake8
+        flake8 service --count --select=E9,F63,F7,F82 --show-source --statistics
+        flake8 service --count --max-complexity=10 --max-line-length=127 --statistics
+---
+apiVersion: tekton.dev/v1beta1
+kind: Task
+metadata:
+  name: git-clone
+spec:
+  workspaces:
+    - name: output
+  params:
+    - name: url
+      type: string
+  steps:
+    - name: clone
+      image: alpine/git
+      script: |
+        #!/bin/sh
+        git clone $(params.url) $(workspaces.output.path)
+---
+apiVersion: tekton.dev/v1beta1
+kind: Task
+metadata:
+  name: buildah
+spec:
+  workspaces:
+    - name: source
+  params:
+    - name: IMAGE
+      type: string
+  steps:
+    - name: build
+      image: quay.io/buildah/stable
+      securityContext:
+        privileged: true
+      workingDir: $(workspaces.source.path)
+      script: |
+        #!/bin/sh
+        buildah bud -t $(params.IMAGE) .
